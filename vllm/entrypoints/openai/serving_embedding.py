@@ -110,6 +110,13 @@ class OpenAIServingEmbedding(OpenAIServing):
         request_id = f"embd-{random_uuid()}"
         created_time = int(time.monotonic())
 
+        truncate_prompt_tokens = None
+
+        if request.truncate_prompt_tokens is not None:
+            if request.truncate_prompt_tokens < self.model_config.max_model_len:
+                truncate_prompt_tokens = request.truncate_prompt_tokens
+            else:
+                truncate_prompt_tokens = self.model_config.max_model_len
         # Schedule the request and get the result generator.
         generators: List[AsyncGenerator[EmbeddingRequestOutput, None]] = []
         try:
@@ -127,6 +134,7 @@ class OpenAIServingEmbedding(OpenAIServing):
                     request,
                     tokenizer,
                     request.input,
+                    truncate_prompt_tokens
                 ))
 
             for i, prompt_inputs in enumerate(prompts):
