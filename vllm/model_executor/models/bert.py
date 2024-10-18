@@ -393,7 +393,8 @@ class BertEmbeddingModel(nn.Module):
         print("cache_config", cache_config)
         self.model = BertModel(config, cache_config, quant_config)
         # self.pooling_type = self.get_pooling_type()
-        self._pooler = Pooler(pooling_type=self.pooling_type, normalize=True)
+        # self._pooler = Pooler(pooling_type=self.pooling_type, normalize=True)
+        self._pooler = Pooler(PoolingType.CLS, normalize=True)
 
     def forward(
         self,
