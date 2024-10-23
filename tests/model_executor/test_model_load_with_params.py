@@ -16,5 +16,6 @@ def test_model_loading_with_params(vllm_runner):
                      max_model_len=MAX_MODEL_LEN) as model:
         output = model.encode("Write a short story about a robot that"
                               " dreams for the first time.\n")
+        print(model.__dict__)
         print(output)
         assert output
