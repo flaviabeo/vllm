@@ -1756,6 +1756,9 @@ def _get_and_verify_max_len(
         "max_seq_length",
         "seq_len",
     ]
+
+    print("bert_config at ModelConfig")
+    print(bert_config)
     # Choose the smallest "max_length" from the possible keys.
     max_len_key = None
     for key in possible_keys:
@@ -1820,8 +1823,6 @@ def _get_and_verify_max_len(
             derived_max_model_len *= scaling_factor
 
     if bert_config and "max_seq_length" in bert_config:
-        print("bert_config at ModelConfig")
-        print(bert_config)
         derived_max_model_len = bert_config["max_seq_length"]
 
     # If the user specified a max length, make sure it is smaller than the
