@@ -332,7 +332,6 @@ def get_sentence_transformer_tokenizer_config(model, revision='main'):
         bert_dict = get_hf_file_to_dict(config_name, 
                                         model,
                                         revision)
-        print(bert_dict)
         if bert_dict:
             break
 
@@ -340,6 +339,7 @@ def get_sentence_transformer_tokenizer_config(model, revision='main'):
         return None
 
     if all(k in bert_dict for k in ("max_seq_length", "do_lower_case")):
+        print(bert_dict)
         return bert_dict
     return None
 
