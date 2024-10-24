@@ -180,7 +180,8 @@ class ModelConfig:
                                     config_format)
         self.hf_text_config = get_hf_text_config(self.hf_config)
         self.pooling_config = self.get_pooling_config()
-        self.bert_config, self.do_lower_case = self._get_bert_config()
+        self.bert_config = self._get_bert_config() 
+        self.do_lower_case = self._get_bert_config()
         self.hf_image_processor_config = get_hf_image_processor_config(
             self.model, revision)
         self.dtype = _get_and_verify_dtype(self.hf_text_config, dtype)
@@ -255,6 +256,8 @@ class ModelConfig:
         bert_config = get_sentence_transformer_tokenizer_config(
             self.model, self.revision)
         if bert_config is not None:
+            print("bert_config at _get_bert_config")
+            print(bert_config)
             return bert_config
         return None
 

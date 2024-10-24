@@ -339,6 +339,7 @@ def get_sentence_transformer_tokenizer_config(model, revision='main'):
         return None
 
     if all(k in bert_dict for k in ("max_seq_length", "do_lower_case")):
+        print("bert_dict at get_sentence_transformer_tokenizer_config")
         print(bert_dict)
         return bert_dict
     return None
