@@ -332,6 +332,7 @@ def get_sentence_transformer_tokenizer_config(model, revision='main'):
         bert_dict = get_hf_file_to_dict(config_name, 
                                         model,
                                         revision)
+        print(bert_dict)
         if bert_dict:
             break
 
