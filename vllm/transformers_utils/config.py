@@ -1,5 +1,6 @@
 import enum
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Type, Union
 
@@ -9,6 +10,7 @@ from huggingface_hub import (file_exists, hf_hub_download,
 from huggingface_hub.utils import (EntryNotFoundError, LocalEntryNotFoundError,
                                    RepositoryNotFoundError,
                                    RevisionNotFoundError)
+from torch import nn
 from transformers import GenerationConfig, PretrainedConfig
 from transformers.models.auto.image_processing_auto import (
     get_image_processor_config)
@@ -20,17 +22,20 @@ from vllm.envs import VLLM_USE_MODELSCOPE
 from vllm.logger import init_logger
 # yapf conflicts with isort for this block
 # yapf: disable
-from vllm.transformers_utils.configs import (ChatGLMConfig, DbrxConfig,
+from vllm.transformers_utils.configs import (ChatGLMConfig, Cohere2Config,
+                                             DbrxConfig, DeepseekVLV2Config,
                                              EAGLEConfig, ExaoneConfig,
                                              H2OVLChatConfig,
                                              InternVLChatConfig, JAISConfig,
                                              MedusaConfig, MllamaConfig,
                                              MLPSpeculatorConfig, MPTConfig,
                                              NemotronConfig, NVLM_D_Config,
-                                             RWConfig, SolarConfig,
+                                             Olmo2Config, RWConfig,
+                                             SolarConfig, Telechat2Config,
                                              UltravoxConfig)
 # yapf: enable
 from vllm.transformers_utils.utils import check_gguf_file
+from vllm.utils import resolve_obj_by_qualname
 
 if VLLM_USE_MODELSCOPE:
     from modelscope import AutoConfig
@@ -38,6 +43,7 @@ else:
     from transformers import AutoConfig
 
 MISTRAL_CONFIG_NAME = "params.json"
+HF_TOKEN = os.getenv('HF_TOKEN', None)
 
 logger = init_logger(__name__)
 
@@ -47,7 +53,9 @@ _CONFIG_REGISTRY_OVERRIDE_HF: Dict[str, Type[PretrainedConfig]] = {
 
 _CONFIG_REGISTRY: Dict[str, Type[PretrainedConfig]] = {
     "chatglm": ChatGLMConfig,
+    "cohere2": Cohere2Config,
     "dbrx": DbrxConfig,
+    "deepseek_vl_v2": DeepseekVLV2Config,
     "mpt": MPTConfig,
     "RefinedWeb": RWConfig,  # For tiiuae/falcon-40b(-instruct)
     "RefinedWebModel": RWConfig,  # For tiiuae/falcon-7b(-instruct)
@@ -60,7 +68,9 @@ _CONFIG_REGISTRY: Dict[str, Type[PretrainedConfig]] = {
     "internvl_chat": InternVLChatConfig,
     "nemotron": NemotronConfig,
     "NVLM_D": NVLM_D_Config,
+    "olmo2": Olmo2Config,
     "solar": SolarConfig,
+    "telechat": Telechat2Config,
     "ultravox": UltravoxConfig,
     **_CONFIG_REGISTRY_OVERRIDE_HF
 }
@@ -72,8 +82,8 @@ class ConfigFormat(str, enum.Enum):
     MISTRAL = "mistral"
 
 
-def file_or_path_exists(model: Union[str, Path], config_name, revision,
-                        token) -> bool:
+def file_or_path_exists(model: Union[str, Path], config_name: str,
+                        revision: Optional[str]) -> bool:
     if Path(model).exists():
         return (Path(model) / config_name).is_file()
 
@@ -88,7 +98,10 @@ def file_or_path_exists(model: Union[str, Path], config_name, revision,
     # NB: file_exists will only check for the existence of the config file on
     # hf_hub. This will fail in offline mode.
     try:
-        return file_exists(model, config_name, revision=revision, token=token)
+        return file_exists(model,
+                           config_name,
+                           revision=revision,
+                           token=HF_TOKEN)
     except huggingface_hub.errors.OfflineModeIsEnabled:
         # Don't raise in offline mode, all we know is that we don't have this
         # file cached.
@@ -107,6 +120,15 @@ def patch_rope_scaling(config: PretrainedConfig) -> None:
 
 
 def patch_rope_scaling_dict(rope_scaling: Dict[str, Any]) -> None:
+    if "rope_type" in rope_scaling and "type" in rope_scaling:
+        rope_type = rope_scaling["rope_type"]
+        rope_type_legacy = rope_scaling["type"]
+        if rope_type != rope_type_legacy:
+            raise ValueError(
+                f"Found conflicts between 'rope_type={rope_type}' (modern "
+                f"field) and 'type={rope_type_legacy}' (legacy field). "
+                "You should only specify one of them.")
+
     if "rope_type" not in rope_scaling and "type" in rope_scaling:
         rope_scaling["rope_type"] = rope_scaling["type"]
         logger.info("Replacing legacy 'type' key with 'rope_type'")
@@ -146,8 +168,6 @@ def get_config(
     trust_remote_code: bool,
     revision: Optional[str] = None,
     code_revision: Optional[str] = None,
-    rope_scaling: Optional[dict] = None,
-    rope_theta: Optional[float] = None,
     config_format: ConfigFormat = ConfigFormat.AUTO,
     **kwargs,
 ) -> PretrainedConfig:
@@ -159,15 +179,11 @@ def get_config(
         model = Path(model).parent
 
     if config_format == ConfigFormat.AUTO:
-        if is_gguf or file_or_path_exists(model,
-                                          HF_CONFIG_NAME,
-                                          revision=revision,
-                                          token=kwargs.get("token")):
+        if is_gguf or file_or_path_exists(
+                model, HF_CONFIG_NAME, revision=revision):
             config_format = ConfigFormat.HF
-        elif file_or_path_exists(model,
-                                 MISTRAL_CONFIG_NAME,
-                                 revision=revision,
-                                 token=kwargs.get("token")):
+        elif file_or_path_exists(model, MISTRAL_CONFIG_NAME,
+                                 revision=revision):
             config_format = ConfigFormat.MISTRAL
         else:
             # If we're in offline mode and found no valid config format, then
@@ -177,21 +193,30 @@ def get_config(
             file_exists(model,
                         HF_CONFIG_NAME,
                         revision=revision,
-                        token=kwargs.get("token"))
+                        token=HF_TOKEN)
 
             raise ValueError(f"No supported config format found in {model}")
 
     if config_format == ConfigFormat.HF:
         config_dict, _ = PretrainedConfig.get_config_dict(
-            model, revision=revision, code_revision=code_revision, **kwargs)
+            model,
+            revision=revision,
+            code_revision=code_revision,
+            token=HF_TOKEN,
+            **kwargs,
+        )
 
         # Use custom model class if it's in our registry
         model_type = config_dict.get("model_type")
         if model_type in _CONFIG_REGISTRY:
             config_class = _CONFIG_REGISTRY[model_type]
-            config = config_class.from_pretrained(model,
-                                                  revision=revision,
-                                                  code_revision=code_revision)
+            config = config_class.from_pretrained(
+                model,
+                revision=revision,
+                code_revision=code_revision,
+                token=HF_TOKEN,
+                **kwargs,
+            )
         else:
             try:
                 config = AutoConfig.from_pretrained(
@@ -199,6 +224,7 @@ def get_config(
                     trust_remote_code=trust_remote_code,
                     revision=revision,
                     code_revision=code_revision,
+                    token=HF_TOKEN,
                     **kwargs,
                 )
             except ValueError as e:
@@ -216,7 +242,7 @@ def get_config(
                     raise e
 
     elif config_format == ConfigFormat.MISTRAL:
-        config = load_params_config(model, revision, token=kwargs.get("token"))
+        config = load_params_config(model, revision, token=HF_TOKEN, **kwargs)
     else:
         raise ValueError(f"Unsupported config format: {config_format}")
 
@@ -228,28 +254,17 @@ def get_config(
         model_type = MODEL_FOR_CAUSAL_LM_MAPPING_NAMES[config.model_type]
         config.update({"architectures": [model_type]})
 
-    for key, value in [
-        ("rope_scaling", rope_scaling),
-        ("rope_theta", rope_theta),
-    ]:
-        if value is not None:
-            logger.info(
-                "Updating %s from %r to %r",
-                key,
-                getattr(config, key, None),
-                value,
-            )
-            config.update({key: value})
-
     patch_rope_scaling(config)
+
+    if trust_remote_code:
+        maybe_register_config_serialize_by_value()
 
     return config
 
 
 def get_hf_file_to_dict(file_name: str,
                         model: Union[str, Path],
-                        revision: Optional[str] = 'main',
-                        token: Optional[str] = None):
+                        revision: Optional[str] = 'main'):
     """
     Downloads a file from the Hugging Face Hub and returns 
     its contents as a dictionary.
@@ -258,7 +273,6 @@ def get_hf_file_to_dict(file_name: str,
     - file_name (str): The name of the file to download.
     - model (str): The name of the model on the Hugging Face Hub.
     - revision (str): The specific version of the model. 
-    - token (str): The Hugging Face authentication token.
 
     Returns:
     - config_dict (dict): A dictionary containing 
@@ -268,8 +282,7 @@ def get_hf_file_to_dict(file_name: str,
 
     if file_or_path_exists(model=model,
                            config_name=file_name,
-                           revision=revision,
-                           token=token):
+                           revision=revision):
 
         if not file_path.is_file():
             try:
@@ -288,9 +301,7 @@ def get_hf_file_to_dict(file_name: str,
     return None
 
 
-def get_pooling_config(model: str,
-                       revision: Optional[str] = 'main',
-                       token: Optional[str] = None):
+def get_pooling_config(model: str, revision: Optional[str] = 'main'):
     """
     This function gets the pooling and normalize 
     config from the model - only applies to 
@@ -307,8 +318,7 @@ def get_pooling_config(model: str,
     """
 
     modules_file_name = "modules.json"
-    modules_dict = get_hf_file_to_dict(modules_file_name, model, revision,
-                                       token)
+    modules_dict = get_hf_file_to_dict(modules_file_name, model, revision)
 
     if modules_dict is None:
         return None
@@ -324,8 +334,7 @@ def get_pooling_config(model: str,
     if pooling:
 
         pooling_file_name = "{}/config.json".format(pooling["path"])
-        pooling_dict = get_hf_file_to_dict(pooling_file_name, model, revision,
-                                           token)
+        pooling_dict = get_hf_file_to_dict(pooling_file_name, model, revision)
         pooling_type_name = next(
             (item for item, val in pooling_dict.items() if val is True), None)
 
@@ -360,8 +369,8 @@ def get_pooling_config_name(pooling_name: str) -> Union[str, None]:
 
 
 def get_sentence_transformer_tokenizer_config(model: str,
-                                              revision: Optional[str] = 'main',
-                                              token: Optional[str] = None):
+                                              revision: Optional[str] = 'main'
+                                              ):
     """
     Returns the tokenization configuration dictionary for a 
     given Sentence Transformer BERT model.
@@ -371,7 +380,6 @@ def get_sentence_transformer_tokenizer_config(model: str,
     BERT model.
     - revision (str, optional): The revision of the m
     odel to use. Defaults to 'main'.
-    - token (str): A Hugging Face access token.
 
     Returns:
     - dict: A dictionary containing the configuration parameters 
@@ -386,7 +394,7 @@ def get_sentence_transformer_tokenizer_config(model: str,
             "sentence_xlm-roberta_config.json",
             "sentence_xlnet_config.json",
     ]:
-        encoder_dict = get_hf_file_to_dict(config_name, model, revision, token)
+        encoder_dict = get_hf_file_to_dict(config_name, model, revision)
         if encoder_dict:
             break
 
@@ -398,33 +406,39 @@ def get_sentence_transformer_tokenizer_config(model: str,
     return None
 
 
-def maybe_register_config_serialize_by_value(trust_remote_code: bool) -> None:
+def maybe_register_config_serialize_by_value() -> None:
     """Try to register HF model configuration class to serialize by value
 
-        With trust_remote_code, the config class is typically an instance of a
-        custom class imported from the HF modules cache. The class will not be
-        importable in spawned workers by default (and won't exist at all on
-        other nodes), which breaks serialization of the config.
+        If trust_remote_code is set, and the model's config file specifies an
+        `AutoConfig` class, then the config class is typically an instance of
+        a custom class imported from the HF modules cache.
+
+        Examples:
+
+        >>> from transformers import AutoConfig
+        >>> klass = AutoConfig.from_pretrained('meta-llama/Meta-Llama-3-8B', trust_remote_code=True)
+        >>> klass.__class__ # transformers.models.llama.configuration_llama.LlamaConfig
+        >>> import transformers_modules # error, not initialized
+        >>> klass = AutoConfig.from_pretrained('deepseek-ai/DeepSeek-V2.5', trust_remote_code=True)
+        >>> import transformers_modules # success, initialized
+        >>> klass.__class__ # transformers_modules.deepseek-ai.DeepSeek-V2.5.98b11844770b2c3ffc18b175c758a803640f4e77.configuration_deepseek.DeepseekV2Config
+
+        In the DeepSeek example, the config class is an instance of a custom
+        class that is not serializable by default. This class will not be
+        importable in spawned workers, and won't exist at all on
+        other nodes, which breaks serialization of the config.
 
         In this function we tell the cloudpickle serialization library to pass
         instances of these generated classes by value instead of by reference,
         i.e. the class definition is serialized along with its data so that the
-        class module does not need to be importable on the receiving end. This
-        registration only works if the modules cache has already been
-        initialized.
-
+        class module does not need to be importable on the receiving end.
 
         See: https://github.com/cloudpipe/cloudpickle?tab=readme-ov-file#overriding-pickles-serialization-mechanism-for-importable-constructs
-    """
-    if not trust_remote_code:
-        return
-
+    """ # noqa
     try:
         import transformers_modules
     except ImportError:
-        logger.debug("Could not import transformers_modules used for remote"
-                     " code. If remote code is not needed remove"
-                     " `--trust-remote-code`.")
+        # the config does not need trust_remote_code
         return
 
     try:
@@ -437,19 +451,19 @@ def maybe_register_config_serialize_by_value(trust_remote_code: bool) -> None:
             ray.cloudpickle.register_pickle_by_value(transformers_modules)
 
         # multiprocessing uses pickle to serialize arguments when using spawn
-        # Here we get pickle to use cloudpickle to serialize ModelConfig objects
+        # Here we get pickle to use cloudpickle to serialize config objects
         # that contain instances of the custom config class to avoid
         # serialization problems if the generated module (and model) has a `.`
         # in its name
         import multiprocessing
         import pickle
 
-        from vllm.config import ModelConfig
+        from vllm.config import VllmConfig
 
-        def _reduce_modelconfig(mc: ModelConfig):
-            return (pickle.loads, (cloudpickle.dumps(mc), ))
+        def _reduce_config(config: VllmConfig):
+            return (pickle.loads, (cloudpickle.dumps(config), ))
 
-        multiprocessing.reducer.register(ModelConfig, _reduce_modelconfig)
+        multiprocessing.reducer.register(VllmConfig, _reduce_config)
 
     except Exception as e:
         logger.warning(
@@ -460,15 +474,15 @@ def maybe_register_config_serialize_by_value(trust_remote_code: bool) -> None:
             exc_info=e)
 
 
-def load_params_config(model: Union[str, Path],
-                       revision: Optional[str],
-                       token: Optional[str] = None) -> PretrainedConfig:
+def load_params_config(model: Union[str, Path], revision: Optional[str],
+                       **kwargs) -> PretrainedConfig:
     # This function loads a params.json config which
     # should be used when loading models in mistral format
 
     config_file_name = "params.json"
 
-    config_dict = get_hf_file_to_dict(config_file_name, model, revision, token)
+    config_dict = get_hf_file_to_dict(config_file_name, model, revision)
+    assert isinstance(config_dict, dict)
 
     config_mapping = {
         "dim": "hidden_size",
@@ -511,6 +525,8 @@ def load_params_config(model: Union[str, Path],
         }
         config_dict["architectures"] = ["PixtralForConditionalGeneration"]
         config_dict["model_type"] = "pixtral"
+
+    config_dict.update(kwargs)
 
     config = recurse_elems(config_dict)
     return config
@@ -564,3 +580,16 @@ def try_get_generation_config(
             return GenerationConfig.from_model_config(config)
         except OSError:  # Not found
             return None
+
+
+def get_cross_encoder_activation_function(config: PretrainedConfig):
+    if (hasattr(config, "sbert_ce_default_activation_function")
+            and config.sbert_ce_default_activation_function is not None):
+
+        function_name = config.sbert_ce_default_activation_function
+        assert function_name.startswith("torch.nn.modules."), \
+            "Loading of activation functions is restricted to " \
+            "torch.nn.modules for security reasons"
+        return resolve_obj_by_qualname(function_name)()
+    else:
+        return nn.Sigmoid() if config.num_labels == 1 else nn.Identity()
