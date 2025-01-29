@@ -100,6 +100,8 @@ def sample_sharegpt_requests(
     # Only keep the first two turns of each conversation.
     dataset = [(data["conversations"][0]["value"],
                 data["conversations"][1]["value"]) for data in dataset]
+    
+    aiu_prompt_len = args.aiu_prompt_len
 
     # Shuffle the dataset.
     random.shuffle(dataset)
@@ -121,7 +123,7 @@ def sample_sharegpt_requests(
         if prompt_len < 4 or (fixed_output_len is None and output_len < 4):
             # Prune too short sequences.
             continue
-        if prompt_len > 1024 or prompt_len + output_len > 2048:
+        if prompt_len > aiu_prompt_len or prompt_len + output_len > aiu_prompt_len*2:
             # Prune too long sequences.
             continue
         filtered_dataset.append((prompt, prompt_len, output_len, None))
@@ -920,6 +922,12 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Name of the model.",
+    )
+    parser.add_argument(
+        "--aiu-prompt-len",
+        type=int,
+        default=20,
+        help="AIU warm up equivalent prompt input size."
     )
     parser.add_argument(
         "--tokenizer",
