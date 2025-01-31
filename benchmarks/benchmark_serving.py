@@ -86,6 +86,25 @@ class BenchmarkMetrics:
     std_e2el_ms: float
     percentiles_e2el_ms: List[Tuple[float, float]]
 
+def truncate_to_exact_tokens(tokenizer, text, num_tokens=32):
+    # Tokenize the input string
+    encoded_input = tokenizer(text, return_tensors='pt', truncation=True, padding=True)
+
+    # Get token IDs and their corresponding lengths
+    input_ids = encoded_input['input_ids']
+    input_lengths = encoded_input['attention_mask'].sum(dim=1).tolist()[0]
+
+    # Calculate the number of tokens needed to be truncated
+    tokens_to_truncate = max(0, input_lengths - num_tokens)
+
+    # Truncate the token IDs
+    if tokens_to_truncate > 0:
+        input_ids = input_ids[:, :-tokens_to_truncate]
+
+    # Decode the truncated token IDs back into a string
+    truncated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+
+    return truncated_text
 
 def sample_sharegpt_requests(
     dataset_path: str,
@@ -123,20 +142,11 @@ def sample_sharegpt_requests(
                          ) if fixed_output_len is None else fixed_output_len
 
         if prompt_len > aiu_prompt_len:
-             # Calculate the number of tokens needed to be truncated
-            tokens_to_truncate = max(0, prompt_len - aiu_prompt_len)
-
-            # Truncate the token IDs
-            if tokens_to_truncate > 0:
-                input_ids = prompt_token_ids[:, :-tokens_to_truncate]
-
-            # Decode the truncated token IDs back into a string
-            truncated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+            truncated_text = truncate_to_exact_tokens(tokenizer, prompt)
 
             filtered_dataset.append((truncated_text, prompt_len, output_len, None))
 
     return filtered_dataset
-
 
 def sample_sonnet_requests(
     dataset_path: str,
