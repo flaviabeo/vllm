@@ -121,13 +121,9 @@ def sample_sharegpt_requests(
         prompt_len = len(prompt_token_ids)
         output_len = len(completion_token_ids
                          ) if fixed_output_len is None else fixed_output_len
-        if prompt_len < 4 or (fixed_output_len is None and output_len < 4):
-            # Prune too short sequences.
-            continue
-        if prompt_len > aiu_prompt_len or prompt_len + output_len > aiu_prompt_len*2:
+        if prompt_len > aiu_prompt_len:
             # Prune too long sequences.
-            continue
-        filtered_dataset.append((prompt, prompt_len, output_len, None))
+            filtered_dataset.append((prompt[:aiu_prompt_len], prompt_len, output_len, None))
 
     return filtered_dataset
 
