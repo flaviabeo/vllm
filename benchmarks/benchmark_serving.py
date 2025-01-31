@@ -142,7 +142,7 @@ def sample_sharegpt_requests(
                          ) if fixed_output_len is None else fixed_output_len
 
         if prompt_len > aiu_prompt_len:
-            truncated_text = truncate_to_exact_tokens(tokenizer, prompt)
+            truncated_text = truncate_to_exact_tokens(tokenizer, prompt, aiu_prompt_len)
 
             filtered_dataset.append((truncated_text, prompt_len, output_len, None))
 
