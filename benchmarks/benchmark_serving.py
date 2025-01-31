@@ -121,9 +121,19 @@ def sample_sharegpt_requests(
         prompt_len = len(prompt_token_ids)
         output_len = len(completion_token_ids
                          ) if fixed_output_len is None else fixed_output_len
+
         if prompt_len > aiu_prompt_len:
-            # Prune too long sequences.
-            filtered_dataset.append((prompt[:aiu_prompt_len], prompt_len, output_len, None))
+             # Calculate the number of tokens needed to be truncated
+            tokens_to_truncate = max(0, prompt_len - aiu_prompt_len)
+
+            # Truncate the token IDs
+            if tokens_to_truncate > 0:
+                input_ids = prompt_token_ids[:, :-tokens_to_truncate]
+
+            # Decode the truncated token IDs back into a string
+            truncated_text = tokenizer.decode(input_ids[0], skip_special_tokens=True)
+
+            filtered_dataset.append((truncated_text, prompt_len, output_len, None))
 
     return filtered_dataset
 
